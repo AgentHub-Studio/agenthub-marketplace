@@ -13,6 +13,7 @@ import java.util.UUID;
 public record ReviewResponse(
         UUID id,
         UUID listingId,
+        UUID tenantId,
         UUID reviewerId,
         Short rating,
         String title,
@@ -31,6 +32,7 @@ public record ReviewResponse(
         return new ReviewResponse(
                 review.getId(),
                 review.getListingId(),
+                review.getTenantId(),
                 review.getReviewerId(),
                 review.getRating(),
                 review.getTitle(),

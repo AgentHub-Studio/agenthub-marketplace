@@ -1,8 +1,10 @@
 package dev.cezar.agenthub.marketplace.service;
 
 import dev.cezar.agenthub.marketplace.api.*;
+import dev.cezar.agenthub.marketplace.domain.MarketplaceInstallation;
 import dev.cezar.agenthub.marketplace.domain.MarketplaceListing;
 import dev.cezar.agenthub.marketplace.domain.MarketplaceReview;
+import dev.cezar.agenthub.marketplace.repository.MarketplaceInstallationRepository;
 import dev.cezar.agenthub.marketplace.repository.MarketplaceListingRepository;
 import dev.cezar.agenthub.marketplace.repository.MarketplaceReviewRepository;
 import lombok.RequiredArgsConstructor;
@@ -17,7 +19,10 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * Business logic for marketplace listings and reviews.
+ * Business logic for the global marketplace catalog and per-tenant installations.
+ *
+ * <p>Listings and reviews live in the shared {@code agenthub} schema (with {@code tenant_id}).
+ * Installations live in the per-tenant schema {@code ah_{tenantId}} (no {@code tenant_id}).</p>
  *
  * @since 1.0.0
  */
@@ -28,41 +33,51 @@ public class MarketplaceService {
 
     private final MarketplaceListingRepository listingRepository;
     private final MarketplaceReviewRepository reviewRepository;
+    private final MarketplaceInstallationRepository installationRepository;
 
-    // ── Listings ──────────────────────────────────────────────────────────────
+    // ── Global Catalog ────────────────────────────────────────────────────────
 
     /**
-     * Publishes a package to the marketplace.
+     * Publishes a package to the global marketplace catalog.
+     * Each tenant can publish at most one listing per package slug.
      *
-     * @param request publish request with package details
+     * @param tenantId publisher tenant ID
+     * @param request  publish request
      * @return created listing
      */
-    public Mono<ListingResponse> publishListing(PublishListingRequest request) {
-        MarketplaceListing listing = MarketplaceListing.builder()
-                .packageId(request.packageId())
-                .packageName(request.packageName())
-                .packageSlug(request.packageSlug())
-                .packageType(request.packageType())
-                .description(request.description())
-                .version(request.version())
-                .authorName(request.authorName())
-                .tags(request.tags())
-                .category(request.category())
-                .visibility("PUBLIC")
-                .status("ACTIVE")
-                .downloadCount(0L)
-                .avgRating(BigDecimal.ZERO)
-                .reviewCount(0)
-                .publishedAt(OffsetDateTime.now())
-                .updatedAt(OffsetDateTime.now())
-                .build();
-
-        return listingRepository.save(listing)
+    public Mono<ListingResponse> publishListing(UUID tenantId, PublishListingRequest request) {
+        return listingRepository.existsByTenantIdAndPackageSlug(tenantId, request.packageSlug())
+                .flatMap(exists -> {
+                    if (exists) {
+                        return Mono.error(new IllegalArgumentException(
+                                "Listing already published for slug: " + request.packageSlug()));
+                    }
+                    MarketplaceListing listing = MarketplaceListing.builder()
+                            .tenantId(tenantId)
+                            .packageId(request.packageId())
+                            .packageName(request.packageName())
+                            .packageSlug(request.packageSlug())
+                            .packageType(request.packageType())
+                            .description(request.description())
+                            .version(request.version())
+                            .authorName(request.authorName())
+                            .tags(request.tags())
+                            .category(request.category())
+                            .visibility("PUBLIC")
+                            .status("ACTIVE")
+                            .downloadCount(0L)
+                            .avgRating(BigDecimal.ZERO)
+                            .reviewCount(0)
+                            .publishedAt(OffsetDateTime.now())
+                            .updatedAt(OffsetDateTime.now())
+                            .build();
+                    return listingRepository.save(listing);
+                })
                 .map(ListingResponse::from);
     }
 
     /**
-     * Returns all active marketplace listings.
+     * Returns all active listings in the global catalog (any tenant can browse).
      *
      * @return flux of active listings
      */
@@ -74,11 +89,11 @@ public class MarketplaceService {
     /**
      * Returns active listings filtered by package type.
      *
-     * @param type package type (e.g. AGENT, SKILL, TOOL)
-     * @return flux of matching listings
+     * @param type package type (AGENT, SKILL, TOOL, etc.)
+     * @return matching listings
      */
     public Flux<ListingResponse> findByType(String type) {
-        return listingRepository.findByPackageType(type)
+        return listingRepository.findActiveByPackageType(type)
                 .map(ListingResponse::from);
     }
 
@@ -86,10 +101,10 @@ public class MarketplaceService {
      * Returns active listings filtered by category.
      *
      * @param category category name
-     * @return flux of matching listings
+     * @return matching listings
      */
     public Flux<ListingResponse> findByCategory(String category) {
-        return listingRepository.findByCategory(category)
+        return listingRepository.findActiveByCategory(category)
                 .map(ListingResponse::from);
     }
 
@@ -105,16 +120,31 @@ public class MarketplaceService {
     }
 
     /**
-     * Updates a listing's mutable fields.
+     * Returns all listings published by a specific tenant.
      *
-     * @param id      listing ID
-     * @param request update request
+     * @param tenantId publisher tenant ID
+     * @return tenant's published listings
+     */
+    public Flux<ListingResponse> findByTenant(UUID tenantId) {
+        return listingRepository.findByTenantId(tenantId)
+                .map(ListingResponse::from);
+    }
+
+    /**
+     * Updates mutable fields of a listing owned by the given tenant.
+     *
+     * @param id       listing ID
+     * @param tenantId publisher tenant (ownership check)
+     * @param request  update request
      * @return updated listing
      */
-    public Mono<ListingResponse> updateListing(UUID id, UpdateListingRequest request) {
+    public Mono<ListingResponse> updateListing(UUID id, UUID tenantId, UpdateListingRequest request) {
         return listingRepository.findById(id)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Listing not found: " + id)))
                 .flatMap(listing -> {
+                    if (!tenantId.equals(listing.getTenantId())) {
+                        return Mono.error(new IllegalArgumentException("Listing does not belong to this tenant"));
+                    }
                     if (request.description() != null) listing.setDescription(request.description());
                     if (request.authorName() != null) listing.setAuthorName(request.authorName());
                     if (request.tags() != null) listing.setTags(request.tags());
@@ -127,15 +157,19 @@ public class MarketplaceService {
     }
 
     /**
-     * Marks a listing as REMOVED (soft delete).
+     * Marks a listing as REMOVED (soft delete). Only the publisher tenant can remove it.
      *
-     * @param id listing ID
+     * @param id       listing ID
+     * @param tenantId publisher tenant (ownership check)
      * @return empty on completion
      */
-    public Mono<Void> removeListing(UUID id) {
+    public Mono<Void> removeListing(UUID id, UUID tenantId) {
         return listingRepository.findById(id)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Listing not found: " + id)))
                 .flatMap(listing -> {
+                    if (!tenantId.equals(listing.getTenantId())) {
+                        return Mono.error(new IllegalArgumentException("Listing does not belong to this tenant"));
+                    }
                     listing.setStatus("REMOVED");
                     listing.setUpdatedAt(OffsetDateTime.now());
                     return listingRepository.save(listing);
@@ -143,19 +177,65 @@ public class MarketplaceService {
                 .then();
     }
 
+    // ── Tenant Installations ──────────────────────────────────────────────────
+
     /**
-     * Increments the download counter for a listing.
+     * Installs a marketplace listing into the current tenant's schema.
+     * Each listing can only be installed once per tenant.
      *
-     * @param id listing ID
+     * @param request install request with listing ID and version
+     * @return installation record
+     */
+    public Mono<InstallationResponse> installListing(InstallListingRequest request) {
+        return installationRepository.existsByListingId(request.listingId())
+                .flatMap(exists -> {
+                    if (exists) {
+                        return Mono.error(new IllegalArgumentException(
+                                "Listing already installed: " + request.listingId()));
+                    }
+                    return listingRepository.findById(request.listingId())
+                            .switchIfEmpty(Mono.error(new IllegalArgumentException(
+                                    "Listing not found: " + request.listingId())))
+                            .flatMap(listing -> {
+                                MarketplaceInstallation installation = MarketplaceInstallation.builder()
+                                        .listingId(request.listingId())
+                                        .packageSlug(listing.getPackageSlug())
+                                        .packageType(listing.getPackageType())
+                                        .installedVersion(request.installedVersion())
+                                        .status("ACTIVE")
+                                        .installedAt(OffsetDateTime.now())
+                                        .updatedAt(OffsetDateTime.now())
+                                        .build();
+                                return installationRepository.save(installation)
+                                        .flatMap(saved -> incrementDownload(listing).thenReturn(saved));
+                            });
+                })
+                .map(InstallationResponse::from);
+    }
+
+    /**
+     * Returns all active installations for the current tenant.
+     *
+     * @return flux of active installations
+     */
+    public Flux<InstallationResponse> findInstallations() {
+        return installationRepository.findByStatus("ACTIVE")
+                .map(InstallationResponse::from);
+    }
+
+    /**
+     * Removes an installed package from the current tenant (soft delete).
+     *
+     * @param installationId installation ID
      * @return empty on completion
      */
-    public Mono<Void> incrementDownload(UUID id) {
-        return listingRepository.findById(id)
-                .switchIfEmpty(Mono.error(new IllegalArgumentException("Listing not found: " + id)))
-                .flatMap(listing -> {
-                    listing.setDownloadCount(listing.getDownloadCount() + 1);
-                    listing.setUpdatedAt(OffsetDateTime.now());
-                    return listingRepository.save(listing);
+    public Mono<Void> uninstallListing(UUID installationId) {
+        return installationRepository.findById(installationId)
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Installation not found: " + installationId)))
+                .flatMap(installation -> {
+                    installation.setStatus("REMOVED");
+                    installation.setUpdatedAt(OffsetDateTime.now());
+                    return installationRepository.save(installation);
                 })
                 .then();
     }
@@ -163,20 +243,22 @@ public class MarketplaceService {
     // ── Reviews ───────────────────────────────────────────────────────────────
 
     /**
-     * Submits a review for a listing. Each reviewer can only review a listing once.
+     * Submits a review for a listing. Each tenant+user pair can only review once.
      *
      * @param listingId  listing ID
+     * @param tenantId   reviewer tenant ID
      * @param reviewerId reviewer user ID
      * @param request    review request
      * @return created review
      */
-    public Mono<ReviewResponse> submitReview(UUID listingId, UUID reviewerId, SubmitReviewRequest request) {
-        return reviewRepository.findByListingIdAndReviewerId(listingId, reviewerId)
+    public Mono<ReviewResponse> submitReview(UUID listingId, UUID tenantId, UUID reviewerId, SubmitReviewRequest request) {
+        return reviewRepository.findByListingIdAndTenantIdAndReviewerId(listingId, tenantId, reviewerId)
                 .flatMap(existing -> Mono.<MarketplaceReview>error(
                         new IllegalArgumentException("Reviewer has already submitted a review for this listing")))
                 .switchIfEmpty(Mono.defer(() -> {
                     MarketplaceReview review = MarketplaceReview.builder()
                             .listingId(listingId)
+                            .tenantId(tenantId)
                             .reviewerId(reviewerId)
                             .rating(request.rating())
                             .title(request.title())
@@ -201,14 +283,15 @@ public class MarketplaceService {
                 .map(ReviewResponse::from);
     }
 
-    /**
-     * Recalculates and persists the average rating for a listing
-     * after a new review is submitted.
-     *
-     * @param listingId listing ID
-     * @return empty on completion
-     */
-    public Mono<Void> updateAverageRating(UUID listingId) {
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private Mono<Void> incrementDownload(MarketplaceListing listing) {
+        listing.setDownloadCount(listing.getDownloadCount() + 1);
+        listing.setUpdatedAt(OffsetDateTime.now());
+        return listingRepository.save(listing).then();
+    }
+
+    private Mono<Void> updateAverageRating(UUID listingId) {
         return reviewRepository.findByListingId(listingId)
                 .collectList()
                 .flatMap(reviews -> listingRepository.findById(listingId)

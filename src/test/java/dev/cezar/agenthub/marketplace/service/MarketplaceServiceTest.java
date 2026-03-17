@@ -1,9 +1,12 @@
 package dev.cezar.agenthub.marketplace.service;
 
+import dev.cezar.agenthub.marketplace.api.InstallListingRequest;
 import dev.cezar.agenthub.marketplace.api.PublishListingRequest;
 import dev.cezar.agenthub.marketplace.api.SubmitReviewRequest;
+import dev.cezar.agenthub.marketplace.domain.MarketplaceInstallation;
 import dev.cezar.agenthub.marketplace.domain.MarketplaceListing;
 import dev.cezar.agenthub.marketplace.domain.MarketplaceReview;
+import dev.cezar.agenthub.marketplace.repository.MarketplaceInstallationRepository;
 import dev.cezar.agenthub.marketplace.repository.MarketplaceListingRepository;
 import dev.cezar.agenthub.marketplace.repository.MarketplaceReviewRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,27 +31,31 @@ class MarketplaceServiceTest {
 
     @Mock private MarketplaceListingRepository listingRepository;
     @Mock private MarketplaceReviewRepository reviewRepository;
+    @Mock private MarketplaceInstallationRepository installationRepository;
 
     private MarketplaceService service;
 
     @BeforeEach
     void setUp() {
-        service = new MarketplaceService(listingRepository, reviewRepository);
+        service = new MarketplaceService(listingRepository, reviewRepository, installationRepository);
     }
 
     @Test
-    void shouldPublishListingSuccessfully() {
+    void shouldPublishListingToGlobalCatalog() {
+        UUID tenantId = UUID.randomUUID();
         PublishListingRequest request = new PublishListingRequest(
                 UUID.randomUUID(), "My Agent", "my-agent", "AGENT",
                 "A useful agent", "1.0.0", "dev.cezar", null, "productivity"
         );
 
+        when(listingRepository.existsByTenantIdAndPackageSlug(tenantId, "my-agent"))
+                .thenReturn(Mono.just(false));
         when(listingRepository.save(any(MarketplaceListing.class)))
                 .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
-        StepVerifier.create(service.publishListing(request))
+        StepVerifier.create(service.publishListing(tenantId, request))
                 .assertNext(r -> {
-                    assertThat(r.packageName()).isEqualTo("My Agent");
+                    assertThat(r.tenantId()).isEqualTo(tenantId);
                     assertThat(r.packageSlug()).isEqualTo("my-agent");
                     assertThat(r.status()).isEqualTo("ACTIVE");
                     assertThat(r.visibility()).isEqualTo("PUBLIC");
@@ -58,8 +65,24 @@ class MarketplaceServiceTest {
     }
 
     @Test
+    void shouldRejectDuplicatePublishForSameTenantAndSlug() {
+        UUID tenantId = UUID.randomUUID();
+        PublishListingRequest request = new PublishListingRequest(
+                UUID.randomUUID(), "My Agent", "my-agent", "AGENT",
+                null, "1.0.0", null, null, null
+        );
+
+        when(listingRepository.existsByTenantIdAndPackageSlug(tenantId, "my-agent"))
+                .thenReturn(Mono.just(true));
+
+        StepVerifier.create(service.publishListing(tenantId, request))
+                .expectErrorMatches(e -> e.getMessage().contains("my-agent"))
+                .verify();
+    }
+
+    @Test
     void shouldFindAllActiveListings() {
-        MarketplaceListing listing = buildListing("my-agent", "ACTIVE");
+        MarketplaceListing listing = buildListing("my-agent");
         when(listingRepository.findByStatus("ACTIVE")).thenReturn(Flux.just(listing));
 
         StepVerifier.create(service.findAllListings())
@@ -68,26 +91,53 @@ class MarketplaceServiceTest {
     }
 
     @Test
-    void shouldFindListingsByType() {
-        MarketplaceListing listing = buildListing("my-skill", "ACTIVE");
-        listing.setPackageType("SKILL");
-        when(listingRepository.findByPackageType("SKILL")).thenReturn(Flux.just(listing));
+    void shouldInstallListingIntoTenantSchema() {
+        UUID listingId = UUID.randomUUID();
+        MarketplaceListing listing = buildListing("my-agent");
+        listing.setId(listingId);
 
-        StepVerifier.create(service.findByType("SKILL"))
-                .assertNext(r -> assertThat(r.packageType()).isEqualTo("SKILL"))
+        InstallListingRequest request = new InstallListingRequest(listingId, "1.0.0");
+
+        when(installationRepository.existsByListingId(listingId)).thenReturn(Mono.just(false));
+        when(listingRepository.findById(listingId)).thenReturn(Mono.just(listing));
+        when(installationRepository.save(any(MarketplaceInstallation.class)))
+                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+        when(listingRepository.save(any(MarketplaceListing.class)))
+                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
+
+        StepVerifier.create(service.installListing(request))
+                .assertNext(r -> {
+                    assertThat(r.listingId()).isEqualTo(listingId);
+                    assertThat(r.installedVersion()).isEqualTo("1.0.0");
+                    assertThat(r.status()).isEqualTo("ACTIVE");
+                    assertThat(r.packageSlug()).isEqualTo("my-agent");
+                })
                 .verifyComplete();
     }
 
     @Test
-    void shouldSubmitReviewSuccessfully() {
+    void shouldRejectInstallWhenAlreadyInstalled() {
         UUID listingId = UUID.randomUUID();
-        UUID reviewerId = UUID.randomUUID();
-        SubmitReviewRequest request = new SubmitReviewRequest((short) 5, "Great!", "Works perfectly.");
+        InstallListingRequest request = new InstallListingRequest(listingId, "1.0.0");
 
-        MarketplaceListing listing = buildListing("my-agent", "ACTIVE");
+        when(installationRepository.existsByListingId(listingId)).thenReturn(Mono.just(true));
+
+        StepVerifier.create(service.installListing(request))
+                .expectErrorMatches(e -> e.getMessage().contains("already installed"))
+                .verify();
+    }
+
+    @Test
+    void shouldSubmitReviewWithTenantAndUserId() {
+        UUID listingId = UUID.randomUUID();
+        UUID tenantId = UUID.randomUUID();
+        UUID reviewerId = UUID.randomUUID();
+        SubmitReviewRequest request = new SubmitReviewRequest((short) 5, "Excellent!", "Works perfectly.");
+
+        MarketplaceListing listing = buildListing("my-agent");
         listing.setId(listingId);
 
-        when(reviewRepository.findByListingIdAndReviewerId(listingId, reviewerId))
+        when(reviewRepository.findByListingIdAndTenantIdAndReviewerId(listingId, tenantId, reviewerId))
                 .thenReturn(Mono.empty());
         when(reviewRepository.save(any(MarketplaceReview.class)))
                 .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
@@ -96,68 +146,54 @@ class MarketplaceServiceTest {
         when(listingRepository.save(any(MarketplaceListing.class)))
                 .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
 
-        StepVerifier.create(service.submitReview(listingId, reviewerId, request))
+        StepVerifier.create(service.submitReview(listingId, tenantId, reviewerId, request))
                 .assertNext(r -> {
                     assertThat(r.rating()).isEqualTo((short) 5);
-                    assertThat(r.title()).isEqualTo("Great!");
-                    assertThat(r.listingId()).isEqualTo(listingId);
+                    assertThat(r.tenantId()).isEqualTo(tenantId);
                     assertThat(r.reviewerId()).isEqualTo(reviewerId);
+                    assertThat(r.listingId()).isEqualTo(listingId);
                 })
                 .verifyComplete();
     }
 
     @Test
-    void shouldRejectDuplicateReview() {
+    void shouldRejectDuplicateReviewFromSameTenantAndUser() {
         UUID listingId = UUID.randomUUID();
+        UUID tenantId = UUID.randomUUID();
         UUID reviewerId = UUID.randomUUID();
-        SubmitReviewRequest request = new SubmitReviewRequest((short) 4, "Good", null);
+        SubmitReviewRequest request = new SubmitReviewRequest((short) 3, "OK", null);
 
         MarketplaceReview existing = MarketplaceReview.builder()
                 .id(UUID.randomUUID())
                 .listingId(listingId)
+                .tenantId(tenantId)
                 .reviewerId(reviewerId)
-                .rating((short) 4)
+                .rating((short) 3)
                 .createdAt(OffsetDateTime.now())
                 .updatedAt(OffsetDateTime.now())
                 .build();
 
-        when(reviewRepository.findByListingIdAndReviewerId(listingId, reviewerId))
+        when(reviewRepository.findByListingIdAndTenantIdAndReviewerId(listingId, tenantId, reviewerId))
                 .thenReturn(Mono.just(existing));
 
-        StepVerifier.create(service.submitReview(listingId, reviewerId, request))
+        StepVerifier.create(service.submitReview(listingId, tenantId, reviewerId, request))
                 .expectErrorMatches(e -> e.getMessage().contains("already submitted"))
                 .verify();
     }
 
-    @Test
-    void shouldIncrementDownloadCount() {
-        UUID id = UUID.randomUUID();
-        MarketplaceListing listing = buildListing("my-agent", "ACTIVE");
-        listing.setId(id);
-        listing.setDownloadCount(10L);
-
-        when(listingRepository.findById(id)).thenReturn(Mono.just(listing));
-        when(listingRepository.save(any(MarketplaceListing.class)))
-                .thenAnswer(inv -> Mono.just(inv.getArgument(0)));
-
-        StepVerifier.create(service.incrementDownload(id))
-                .verifyComplete();
-
-        assertThat(listing.getDownloadCount()).isEqualTo(11L);
-    }
-
     // Helpers
 
-    private MarketplaceListing buildListing(String slug, String status) {
+    private MarketplaceListing buildListing(String slug) {
         return MarketplaceListing.builder()
                 .id(UUID.randomUUID())
+                .tenantId(UUID.randomUUID())
                 .packageId(UUID.randomUUID())
                 .packageName(slug)
                 .packageSlug(slug)
                 .packageType("AGENT")
                 .version("1.0.0")
                 .visibility("PUBLIC")
-                .status(status)
+                .status("ACTIVE")
                 .downloadCount(0L)
                 .avgRating(BigDecimal.ZERO)
                 .reviewCount(0)

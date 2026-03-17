@@ -1,8 +1,7 @@
 package dev.cezar.agenthub.marketplace.controller;
 
-import dev.cezar.agenthub.marketplace.api.ListingResponse;
-import dev.cezar.agenthub.marketplace.api.PublishListingRequest;
-import dev.cezar.agenthub.marketplace.api.UpdateListingRequest;
+import dev.cezar.agenthub.marketplace.api.*;
+import dev.cezar.agenthub.marketplace.multitenant.TenantContextHelper;
 import dev.cezar.agenthub.marketplace.service.MarketplaceService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -18,7 +17,8 @@ import reactor.core.publisher.Mono;
 import java.util.UUID;
 
 /**
- * REST controller for marketplace listing operations.
+ * REST controller for the global marketplace catalog.
+ * GET endpoints are public; mutations require authentication.
  *
  * @since 1.0.0
  */
@@ -26,63 +26,71 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/marketplace/listings")
 @RequiredArgsConstructor
-@Tag(name = "Marketplace Listings", description = "Package discovery and publishing")
+@Tag(name = "Marketplace Catalog", description = "Global package catalog — discovery and publishing")
 public class MarketplaceController {
 
     private final MarketplaceService service;
 
+    // ── Browse (public) ───────────────────────────────────────────────────────
+
     @GetMapping
-    @Operation(summary = "List all active marketplace listings")
+    @Operation(summary = "List all active listings in the global catalog")
     public Flux<ListingResponse> listAll() {
         return service.findAllListings();
     }
 
     @GetMapping("/type/{type}")
-    @Operation(summary = "List listings by package type")
+    @Operation(summary = "List active listings by package type (AGENT, SKILL, TOOL...)")
     public Flux<ListingResponse> listByType(@PathVariable String type) {
         return service.findByType(type);
     }
 
     @GetMapping("/category/{category}")
-    @Operation(summary = "List listings by category")
+    @Operation(summary = "List active listings by category")
     public Flux<ListingResponse> listByCategory(@PathVariable String category) {
         return service.findByCategory(category);
     }
 
     @GetMapping("/{slug}")
-    @Operation(summary = "Get listing by package slug")
+    @Operation(summary = "Get a listing by package slug")
     public Mono<ListingResponse> getBySlug(@PathVariable String slug) {
         return service.findBySlug(slug)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Listing not found: " + slug)));
     }
 
+    // ── Publish / Manage (authenticated — publisher tenant only) ──────────────
+
+    @GetMapping("/mine")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "List listings published by the current tenant")
+    public Flux<ListingResponse> listMine() {
+        return TenantContextHelper.getTenantId()
+                .flatMapMany(service::findByTenant);
+    }
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @PreAuthorize("isAuthenticated()")
-    @Operation(summary = "Publish a package to the marketplace")
+    @Operation(summary = "Publish a package to the global marketplace")
     public Mono<ListingResponse> publish(@Valid @RequestBody PublishListingRequest request) {
-        return service.publishListing(request);
+        return TenantContextHelper.getTenantId()
+                .flatMap(tenantId -> service.publishListing(tenantId, request));
     }
 
     @PatchMapping("/{id}")
     @PreAuthorize("isAuthenticated()")
-    @Operation(summary = "Update a marketplace listing")
+    @Operation(summary = "Update a listing (publisher tenant only)")
     public Mono<ListingResponse> update(@PathVariable UUID id, @RequestBody UpdateListingRequest request) {
-        return service.updateListing(id, request);
+        return TenantContextHelper.getTenantId()
+                .flatMap(tenantId -> service.updateListing(id, tenantId, request));
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @PreAuthorize("isAuthenticated()")
-    @Operation(summary = "Remove a listing from the marketplace")
+    @Operation(summary = "Remove a listing from the marketplace (publisher tenant only)")
     public Mono<Void> remove(@PathVariable UUID id) {
-        return service.removeListing(id);
-    }
-
-    @PostMapping("/{id}/install")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @Operation(summary = "Record a package install (increments download count)")
-    public Mono<Void> install(@PathVariable UUID id) {
-        return service.incrementDownload(id);
+        return TenantContextHelper.getTenantId()
+                .flatMap(tenantId -> service.removeListing(id, tenantId));
     }
 }

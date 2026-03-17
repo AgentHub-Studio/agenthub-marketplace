@@ -13,7 +13,8 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * Represents a package published to the marketplace by a tenant.
+ * Global marketplace listing — lives in the shared {@code agenthub} schema,
+ * visible to all tenants. Each listing belongs to the tenant that published it.
  *
  * @since 1.0.0
  */
@@ -21,12 +22,17 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table("marketplace_listing")
+@Table(schema = "agenthub", value = "marketplace_listing")
 public class MarketplaceListing {
 
     @Id
     private UUID id;
 
+    /** Tenant that published this listing. */
+    @Column("tenant_id")
+    private UUID tenantId;
+
+    /** Reference to the package in the publisher's registry schema. */
     @Column("package_id")
     private UUID packageId;
 

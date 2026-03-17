@@ -7,12 +7,13 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * Response DTO for a marketplace listing.
+ * Response DTO for a global marketplace listing.
  *
  * @since 1.0.0
  */
 public record ListingResponse(
         UUID id,
+        UUID tenantId,
         UUID packageId,
         String packageName,
         String packageSlug,
@@ -40,6 +41,7 @@ public record ListingResponse(
     public static ListingResponse from(MarketplaceListing listing) {
         return new ListingResponse(
                 listing.getId(),
+                listing.getTenantId(),
                 listing.getPackageId(),
                 listing.getPackageName(),
                 listing.getPackageSlug(),

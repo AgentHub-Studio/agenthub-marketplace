@@ -18,7 +18,8 @@ import reactor.core.publisher.Mono;
 import java.util.UUID;
 
 /**
- * REST controller for marketplace review operations.
+ * REST controller for marketplace reviews.
+ * GET is public; POST requires authentication.
  *
  * @since 1.0.0
  */
@@ -26,7 +27,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/marketplace/listings/{listingId}/reviews")
 @RequiredArgsConstructor
-@Tag(name = "Marketplace Reviews", description = "Package ratings and reviews")
+@Tag(name = "Marketplace Reviews", description = "Ratings and reviews for marketplace listings")
 public class ReviewController {
 
     private final MarketplaceService service;
@@ -40,11 +41,13 @@ public class ReviewController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @PreAuthorize("isAuthenticated()")
-    @Operation(summary = "Submit a review for a listing")
+    @Operation(summary = "Submit a review for a listing (one per tenant+user)")
     public Mono<ReviewResponse> submitReview(
             @PathVariable UUID listingId,
             @Valid @RequestBody SubmitReviewRequest request) {
-        return TenantContextHelper.getUserId()
-                .flatMap(reviewerId -> service.submitReview(listingId, reviewerId, request));
+        return Mono.zip(
+                TenantContextHelper.getTenantId(),
+                TenantContextHelper.getUserId()
+        ).flatMap(tuple -> service.submitReview(listingId, tuple.getT1(), tuple.getT2(), request));
     }
 }

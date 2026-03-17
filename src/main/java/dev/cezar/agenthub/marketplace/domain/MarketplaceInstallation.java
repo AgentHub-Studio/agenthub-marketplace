@@ -12,8 +12,8 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * Review for a marketplace listing — lives in the shared {@code agenthub} schema.
- * Each review belongs to the tenant+user that submitted it.
+ * Records a package installed by a tenant from the global marketplace catalog.
+ * Lives in the per-tenant schema {@code ah_{tenantId}} — no {@code tenant_id} column needed.
  *
  * @since 1.0.0
  */
@@ -21,29 +21,29 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(schema = "agenthub", value = "marketplace_review")
-public class MarketplaceReview {
+@Table("marketplace_installation")
+public class MarketplaceInstallation {
 
     @Id
     private UUID id;
 
+    /** Reference to {@code agenthub.marketplace_listing.id}. */
     @Column("listing_id")
     private UUID listingId;
 
-    /** Tenant that submitted this review. */
-    @Column("tenant_id")
-    private UUID tenantId;
+    @Column("package_slug")
+    private String packageSlug;
 
-    /** User within the reviewer tenant. */
-    @Column("reviewer_id")
-    private UUID reviewerId;
+    @Column("package_type")
+    private String packageType;
 
-    private Short rating;
-    private String title;
-    private String body;
+    @Column("installed_version")
+    private String installedVersion;
 
-    @Column("created_at")
-    private OffsetDateTime createdAt;
+    private String status;
+
+    @Column("installed_at")
+    private OffsetDateTime installedAt;
 
     @Column("updated_at")
     private OffsetDateTime updatedAt;
