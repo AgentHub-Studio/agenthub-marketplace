@@ -8,7 +8,7 @@
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS marketplace_installation (
-    id             UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     listing_id     UUID        NOT NULL,       -- ref to agenthub.marketplace_listing.id
     package_slug   VARCHAR(200) NOT NULL,
     package_type   VARCHAR(50)  NOT NULL,
